@@ -29,6 +29,7 @@ final class RelaySessionStreams {
 
 	private long nextOutgoingSequence;
 	private boolean outgoingExhausted;
+	private IOException outgoingFailure;
 
 	RelaySessionStreams(byte[] sessionId, InputStream framedInput,
 			OutputStream framedOutput) {
@@ -53,14 +54,24 @@ final class RelaySessionStreams {
 
 	private synchronized void writeFrame(RelayFrameCodec.Type type,
 			byte[] payload) throws IOException {
+		if (outgoingFailure != null) {
+			throw new IOException("Relay output is unusable", outgoingFailure);
+		}
 		if (outgoingExhausted) {
 			throw new IOException("Relay sequence exhausted");
 		}
 		long sequence = nextOutgoingSequence;
+		try {
+			RelayFrameCodec.writeFrame(framedOutput,
+					new RelayFrameCodec.Frame(type, sessionId, sequence, payload));
+		} catch (IOException e) {
+			// A partial frame may already have reached the wire. Do not append
+			// further frames to a stream whose framing can no longer be trusted.
+			outgoingFailure = e;
+			throw e;
+		}
 		if (sequence == Long.MAX_VALUE) outgoingExhausted = true;
 		else nextOutgoingSequence++;
-		RelayFrameCodec.writeFrame(framedOutput,
-				new RelayFrameCodec.Frame(type, sessionId, sequence, payload));
 	}
 
 	private final class SessionInputStream extends InputStream {
@@ -103,12 +114,14 @@ final class RelaySessionStreams {
 						break;
 					case CLOSE:
 						if (frame.getPayload().length != 0) {
-							throw new IOException("Invalid relay CLOSE payload");
+							throw new IOException(
+									"Invalid relay CLOSE payload");
 						}
-					endOfStream = true;
-					break;
+						endOfStream = true;
+						break;
 					default:
-						throw new IOException("Unexpected relay frame type");
+						throw new IOException(
+								"Unexpected relay frame type");
 				}
 			}
 			if (payloadOffset == currentPayload.length) return -1;
@@ -133,13 +146,13 @@ final class RelaySessionStreams {
 		private boolean closed;
 
 		@Override
-		public void write(int value) throws IOException {
+		public synchronized void write(int value) throws IOException {
 			byte[] one = {(byte) value};
 			write(one, 0, 1);
 		}
 
 		@Override
-		public void write(byte[] bytes, int offset, int length)
+		public synchronized void write(byte[] bytes, int offset, int length)
 				throws IOException {
 			if (bytes == null) throw new NullPointerException();
 			if (offset < 0 || length < 0 || length > bytes.length - offset) {
@@ -160,13 +173,24 @@ final class RelaySessionStreams {
 		}
 
 		@Override
-		public void flush() throws IOException {
+		public synchronized void flush() throws IOException {
 			if (closed) throw new IOException("Stream is closed");
-			framedOutput.flush();
+			synchronized (RelaySessionStreams.this) {
+				if (outgoingFailure != null) {
+					throw new IOException("Relay output is unusable",
+							outgoingFailure);
+				}
+				try {
+					framedOutput.flush();
+				} catch (IOException e) {
+					outgoingFailure = e;
+					throw e;
+				}
+			}
 		}
 
 		@Override
-		public void close() throws IOException {
+		public synchronized void close() throws IOException {
 			if (closed) return;
 			closed = true;
 			writeFrame(RelayFrameCodec.Type.CLOSE, new byte[0]);
