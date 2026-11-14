@@ -142,16 +142,21 @@ public class RelaySessionStreamsTest {
 	@Test
 	public void rejectsCloseFrameWithPayload() throws Exception {
 		ByteArrayOutputStream wire = new ByteArrayOutputStream();
-		RelayFrameCodec.writeFrame(wire, new RelayFrameCodec.Frame(
-				RelayFrameCodec.Type.CLOSE, SESSION_ID, 0, new byte[] {1}));
-		RelaySessionStreams receiver = new RelaySessionStreams(SESSION_ID,
-				new ByteArrayInputStream(wire.toByteArray()),
-				new ByteArrayOutputStream());
+		java.io.DataOutputStream out = new java.io.DataOutputStream(wire);
+		out.writeInt(0x42524c59); // BRLY
+		out.writeByte(RelayFrameCodec.VERSION);
+		out.writeByte(3); // CLOSE
+		out.write(SESSION_ID);
+		out.writeLong(0);
+		out.writeInt(1);
+		out.writeByte(1);
+
 		try {
-			receiver.getInputStream().read();
+			RelayFrameCodec.readFrame(
+					new ByteArrayInputStream(wire.toByteArray()));
 			fail();
 		} catch (IOException expected) {
-			assertEquals("Invalid relay CLOSE payload", expected.getMessage());
+			assertEquals("Invalid relay frame payload", expected.getMessage());
 		}
 	}
 
