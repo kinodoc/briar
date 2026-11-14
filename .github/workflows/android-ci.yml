@@ -30,8 +30,14 @@ jobs:
           distribution: temurin
           java-version: '21'
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+      # GitHub-hosted Ubuntu runners already provide the Android SDK.
+      # Avoid android-actions/setup-android@v3 here: it tries to install
+      # the obsolete SDK package named 'tools' and fails before Gradle runs.
+      - name: Verify Android SDK
+        run: |
+          echo "ANDROID_HOME=${ANDROID_HOME:-<unset>}"
+          test -n "$ANDROID_HOME"
+          test -x "$ANDROID_HOME/platform-tools/adb"
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
